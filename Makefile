@@ -22,6 +22,7 @@ solver: solver.c
 mini: mini.c
 	$(CC) $(CFLAGS) $< -o $@
 
+# solver may emit any optimal path; mini must match the recorded path exactly.
 check: solver mini $(VECTORS)
 	./solver --self-test
 	@expected=$$(mktemp); actual=$$(mktemp); \
@@ -30,21 +31,28 @@ check: solver mini $(VECTORS)
 		while IFS='|' read -r state solution; do \
 			case "$$state" in ""|\#*) continue ;; esac; \
 			printf '%s\n' "$$solution" >"$$expected"; \
-			for binary in ./solver ./mini; do \
-				$$binary "$$state" >"$$actual"; \
-				status=$$?; \
-				test $$status -eq 0 || { \
-					echo "$$binary $$state: exit status $$status"; exit 1; }; \
-				cmp -s "$$actual" "$$expected" || { \
-					echo "$$binary $$state: output mismatch"; \
-					echo "  expected: $$solution"; \
-					printf '  got:      '; cat "$$actual"; \
-					echo "  ($$(wc -c <"$$expected") bytes expected, \
+			want=$$(printf '%s\n' "$$solution" | awk '{print NF}'); \
+			./solver "$$state" >"$$actual"; \
+			status=$$?; \
+			test $$status -eq 0 || { \
+				echo "./solver $$state: exit status $$status"; exit 1; }; \
+			got=$$(awk '{print NF}' "$$actual"); \
+			test "$$got" -eq "$$want" || { \
+				echo "./solver $$state: move count $$got, expected $$want"; \
+				printf '  got: '; cat "$$actual"; exit 1; }; \
+			./mini "$$state" >"$$actual"; \
+			status=$$?; \
+			test $$status -eq 0 || { \
+				echo "./mini $$state: exit status $$status"; exit 1; }; \
+			cmp -s "$$actual" "$$expected" || { \
+				echo "./mini $$state: output mismatch"; \
+				echo "  expected: $$solution"; \
+				printf '  got:      '; cat "$$actual"; \
+				echo "  ($$(wc -c <"$$expected") bytes expected, \
 $$(wc -c <"$$actual") produced)"; exit 1; }; \
-			done; \
 			count=$$((count + 1)); \
 		done <$(VECTORS); \
-		echo "$$count solution vectors matched by solver and mini"
+		echo "$$count solution vectors: solver length-optimal, mini exact"
 	@for binary in ./solver ./mini; do \
 		for bad in $(INVALID_STATES); do \
 			$$binary "$$bad" >/dev/null 2>&1; \
