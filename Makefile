@@ -12,7 +12,7 @@ VECTORS := tests/solutions.txt
 INVALID_STATES := 1234567111111 123456711111111 02345671111111 82345671111111 \
 	12345671111110 12345671111114 1234567111111a 11345671111111 12345671111112
 
-.PHONY: all check prove clean indent
+.PHONY: all check gate-h13 sample-d11 prove clean indent
 
 all: solver mini
 
@@ -21,6 +21,15 @@ solver: solver.c
 
 mini: mini.c
 	$(CC) $(CFLAGS) $< -o $@
+
+# Full-domain H1 (admissible h) + H3 (IDA* length == exact BFS distance).
+# Slow: millions of IDA* searches; prints wall-clock seconds at the end.
+gate-h13: solver
+	./solver --gate-h13
+
+# Print three distance-11 scramble strings (excluding 21345671111111).
+sample-d11: solver
+	./solver --sample-d11
 
 # solver may emit any optimal path; mini must match the recorded path exactly.
 check: solver mini $(VECTORS)

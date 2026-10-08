@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 enum {
     CUBIES = 7,
@@ -629,6 +631,221 @@ static int self_test(void)
     return 1;
 }
 
+/* Exact HTM distances via factored BFS (host oracle for H1/H3). */
+static int build_exact_dist(uint8_t *dist, uint32_t *queue)
+{
+    uint32_t head = 0, tail = 1;
+    uint16_t p, o;
+
+    memset(dist, UINT8_MAX, (size_t) STATES);
+    dist[0] = 0;
+    queue[0] = 0;
+    while (head < tail) {
+        uint32_t here = queue[head++];
+        uint8_t d = dist[here];
+        split_rank(here, &p, &o);
+        for (uint8_t m = 0; m < MOVES; ++m) {
+            uint16_t np = p, no = o;
+            uint32_t next;
+            apply_factored(&np, &no, m);
+            next = mul729(np) + no;
+            if (dist[next] == UINT8_MAX) {
+                dist[next] = (uint8_t) (d + 1U);
+                queue[tail++] = next;
+            }
+        }
+    }
+    return tail == (uint32_t) STATES;
+}
+
+static void format_state(const state_t *state, char out[15])
+{
+    for (uint8_t i = 0; i < CUBIES; ++i)
+        out[i] = (char) ('1' + state->p[i]);
+    for (uint8_t i = 0; i < CUBIES; ++i)
+        out[CUBIES + i] = (char) ('1' + state->o[i]);
+    out[14] = '\0';
+}
+
+/*
+ * Correctness gates H1 and H3 over the full domain, with wall-clock timing.
+ * H1: heuristic(p,o) <= exact_bfs_dist for every state.
+ * H3: ida_solve length equals exact_bfs_dist for every state (path also
+ *     applied to confirm it reaches solved).
+ */
+static int gate_h13(void)
+{
+    struct timespec t0, t1;
+    double seconds;
+    uint8_t *dist;
+    uint32_t *queue;
+    uint8_t path[MAX_DEPTH];
+    uint32_t rank;
+    uint32_t h1_fail = 0, h3_fail = 0;
+    int diameter = 0;
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    if (!build_tables()) {
+        fputs("gate-h13: build_tables failed\n", stderr);
+        return 1;
+    }
+    dist = malloc((size_t) STATES);
+    queue = malloc((size_t) STATES * sizeof *queue);
+    if (!dist || !queue) {
+        fputs("gate-h13: out of memory\n", stderr);
+        free(dist);
+        free(queue);
+        return 1;
+    }
+    if (!build_exact_dist(dist, queue)) {
+        fputs("gate-h13: exact BFS did not reach all states\n", stderr);
+        free(dist);
+        free(queue);
+        return 1;
+    }
+    for (rank = 0; rank < (uint32_t) STATES; ++rank)
+        if (dist[rank] > diameter)
+            diameter = dist[rank];
+    if (diameter != MAX_DEPTH) {
+        fprintf(stderr, "gate-h13: diameter %d, expected %d\n", diameter,
+                MAX_DEPTH);
+        free(dist);
+        free(queue);
+        return 1;
+    }
+
+    /* H1: admissibility over every state. */
+    for (rank = 0; rank < (uint32_t) STATES; ++rank) {
+        uint16_t p, o;
+        split_rank(rank, &p, &o);
+        if (heuristic(p, o) > dist[rank]) {
+            if (h1_fail == 0)
+                fprintf(stderr,
+                        "gate-h13 H1 fail at rank %u: h=%u d=%u\n", rank,
+                        heuristic(p, o), dist[rank]);
+            ++h1_fail;
+        }
+    }
+    if (h1_fail) {
+        fprintf(stderr, "gate-h13 H1: %u failures\n", h1_fail);
+        free(dist);
+        free(queue);
+        return 1;
+    }
+    puts("H1 passed: h(s) <= d(s) for all 3674160 states");
+    fflush(stdout);
+
+    /* H3: IDA* length equals exact distance for every state. */
+    for (rank = 0; rank < (uint32_t) STATES; ++rank) {
+        uint16_t p, o;
+        state_t state;
+        int len;
+        int i;
+
+        split_rank(rank, &p, &o);
+        len = ida_solve(p, o, path);
+        if (len != (int) dist[rank]) {
+            if (h3_fail == 0)
+                fprintf(stderr,
+                        "gate-h13 H3 fail at rank %u: len=%d d=%u\n", rank,
+                        len, dist[rank]);
+            ++h3_fail;
+            continue;
+        }
+        unrank_state(rank, &state);
+        for (i = 0; i < len; ++i)
+            state = apply_move(state, path[i]);
+        if (rank_state(&state) != 0) {
+            if (h3_fail == 0)
+                fprintf(stderr,
+                        "gate-h13 H3 path does not solve rank %u\n", rank);
+            ++h3_fail;
+        }
+        if ((rank & 0xffffu) == 0u) {
+            fprintf(stderr, "gate-h13 H3 progress: %u / %u\r", rank,
+                    (uint32_t) STATES);
+            fflush(stderr);
+        }
+    }
+    fputc('\n', stderr);
+    if (h3_fail) {
+        fprintf(stderr, "gate-h13 H3: %u failures\n", h3_fail);
+        free(dist);
+        free(queue);
+        return 1;
+    }
+    puts("H3 passed: IDA* length equals exact distance for all 3674160 states");
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    seconds = (double) (t1.tv_sec - t0.tv_sec) +
+              (double) (t1.tv_nsec - t0.tv_nsec) * 1e-9;
+    printf("gate-h13 wall-clock: %.3f seconds (diameter %d)\n", seconds,
+           diameter);
+    fflush(stdout);
+
+    free(dist);
+    free(queue);
+    return output_failed();
+}
+
+/* Print N distinct distance-11 scramble strings (host BFS oracle). */
+static int sample_d11(int want)
+{
+    uint8_t *dist;
+    uint32_t *queue;
+    uint32_t rank;
+    int got = 0;
+    /* Deterministic stride so picks are spread across the d=11 set. */
+    const uint32_t stride = 139969u; /* prime */
+
+    if (want < 1)
+        want = 3;
+    if (!build_tables()) {
+        fputs("sample-d11: build_tables failed\n", stderr);
+        return 1;
+    }
+    dist = malloc((size_t) STATES);
+    queue = malloc((size_t) STATES * sizeof *queue);
+    if (!dist || !queue) {
+        free(dist);
+        free(queue);
+        return 1;
+    }
+    if (!build_exact_dist(dist, queue)) {
+        free(dist);
+        free(queue);
+        return 1;
+    }
+    for (rank = 1; got < want && rank < (uint32_t) STATES * 2u; ++rank) {
+        uint32_t r = (rank * stride) % (uint32_t) STATES;
+        state_t state;
+        char buf[15];
+        int len;
+        uint8_t path[MAX_DEPTH];
+
+        if (dist[r] != MAX_DEPTH)
+            continue;
+        /* Skip the canonical homework vector if we hit it. */
+        unrank_state(r, &state);
+        format_state(&state, buf);
+        if (!strcmp(buf, "21345671111111"))
+            continue;
+        len = ida_solve(rank_perm(&state), rank_orient(&state), path);
+        if (len != MAX_DEPTH)
+            continue;
+        printf("%s\n", buf);
+        ++got;
+    }
+    free(dist);
+    free(queue);
+    if (got < want) {
+        fprintf(stderr, "sample-d11: only found %d of %d\n", got, want);
+        return 1;
+    }
+    return output_failed();
+}
+
 int main(int argc, char **argv)
 {
     state_t state;
@@ -644,9 +861,20 @@ int main(int argc, char **argv)
         puts("3674160 states; IDA* with factored P/O heuristic");
         return output_failed();
     }
+    if (argc == 2 && !strcmp(argv[1], "--gate-h13"))
+        return gate_h13();
+    if (argc == 2 && !strcmp(argv[1], "--sample-d11"))
+        return sample_d11(3);
     if (argc != 2 || !parse_state(argv[1], &state)) {
         /* C99 5.1.2.2.1 lets argv[0] be null when argc is 0. */
-        fprintf(stderr, "usage: %s PPPPPPPOOOOOOO\n",
+        fprintf(stderr,
+                "usage: %s PPPPPPPOOOOOOO\n"
+                "       %s --self-test\n"
+                "       %s --gate-h13\n"
+                "       %s --sample-d11\n",
+                argc > 0 && argv[0] ? argv[0] : "solver",
+                argc > 0 && argv[0] ? argv[0] : "solver",
+                argc > 0 && argv[0] ? argv[0] : "solver",
                 argc > 0 && argv[0] ? argv[0] : "solver");
         return 2;
     }

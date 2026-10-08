@@ -1,5 +1,6 @@
 .frama-c/
 .frama-c-mcp/
 *.swp
+.DS_Store
 solver
 mini

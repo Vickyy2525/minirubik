@@ -6,8 +6,11 @@
 #   TESTCASE  0 = solved 12345671111111
 #             1 = depth-10 25416373331111
 #             2 = depth-11 21345671111111  (default; instruction-count case)
+#             (more d=11 strings: tests/distance11_extra.txt — paste into input2)
 #   RENDER    0 = no LED (measure retired instructions)
 #             1 = LED scramble -> solve animation (demo)
+# After solving, replays the path on (p,o) ranks and exits via ecall 93:
+#   a0=0 success, a0=1 path did not reach solved, a0=2 search/parse fail.
 # =============================================================================
 .equ TESTCASE, 2
 .equ RENDER, 1
@@ -153,10 +156,86 @@ main:
     addi    a0, zero, 10
     addi    a7, zero, 11
     ecall
-    addi    a7, zero, 10
+    # Internal validation: replay path on (s0,s1) ranks; must reach (0,0).
+    # Exit via ecall 93 with a0=0 on success, a0=1 on validation failure.
+    mv      s3, s0                  # p
+    mv      s4, s1                  # o
+    addi    s5, zero, 0             # i
+.Lvalidate:
+    bge     s5, s2, .Lvalidate_done
+    lui     t0, 10
+    addi    t0, t0, -484
+    add     t0, gp, t0
+    add     t0, t0, s5
+    lbu     s6, 0(t0)               # move
+    # face = (move*11)>>5
+    slli    t0, s6, 3
+    slli    t1, s6, 1
+    add     t0, t0, t1
+    add     t0, t0, s6
+    srli    s7, t0, 5
+    # turns = move - 3*face + 1
+    slli    t0, s7, 1
+    add     t0, t0, s7
+    sub     t0, s6, t0
+    addi    t4, t0, 1
+    # row bases: permutation face row + orientation face row
+    slli    t0, s7, 13
+    slli    t1, s7, 11
+    add     t1, t0, t1
+    slli    t0, s7, 7
+    sub     t1, t1, t0
+    slli    t0, s7, 5
+    sub     t1, t1, t0
+    add     t1, s8, t1
+    slli    t0, s7, 10
+    slli    t2, s7, 8
+    add     t2, t0, t2
+    slli    t0, s7, 7
+    add     t2, t2, t0
+    slli    t0, s7, 5
+    add     t2, t2, t0
+    slli    t0, s7, 4
+    add     t2, t2, t0
+    slli    t0, s7, 1
+    add     t2, t2, t0
+    add     t2, s9, t2
+    mv      t5, s3
+    mv      t6, s4
+.Lval_turn:
+    beq     t4, zero, .Lval_turn_done
+    slli    t0, t5, 1
+    add     t0, t1, t0
+    lbu     t3, 0(t0)
+    lbu     t5, 1(t0)
+    slli    t5, t5, 8
+    or      t5, t5, t3
+    slli    t0, t6, 1
+    add     t0, t2, t0
+    lbu     t3, 0(t0)
+    lbu     t6, 1(t0)
+    slli    t6, t6, 8
+    or      t6, t6, t3
+    addi    t4, t4, -1
+    j       .Lval_turn
+.Lval_turn_done:
+    mv      s3, t5
+    mv      s4, t6
+    addi    s5, s5, 1
+    j       .Lvalidate
+.Lvalidate_done:
+    or      t0, s3, s4
+    bne     t0, zero, .Lvalidate_fail
+    addi    a0, zero, 0
+    addi    a7, zero, 93
+    ecall
+.Lvalidate_fail:
+    addi    a0, zero, 1
+    addi    a7, zero, 93
     ecall
 .Lsolve_fail:
-    addi    a7, zero, 10
+    addi    a0, zero, 2
+    addi    a7, zero, 93
     ecall
 fail_hang:
     j       fail_hang

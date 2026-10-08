@@ -1,0 +1,9 @@
+# Extra distance-11 scrambles for Ripes --iret sampling (host BFS + IDA* verified).
+# solutions.txt only contains one d=11 vector (21345671111111); these three are
+# additional distinct depth-11 states. Assignment budget is 5e7 retired instructions
+# (50,000,000), not 5e6.
+#
+# Also keep measuring: 21345671111111
+36712542122111
+16725431121311
+16243571321321
